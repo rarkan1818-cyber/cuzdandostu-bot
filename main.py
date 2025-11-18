@@ -1,133 +1,91 @@
-import requests
+import asyncio
+import aiohttp
 from bs4 import BeautifulSoup
-import time
-import schedule
 from telegram import Bot
+import os
+import logging
 
-BOT_TOKEN = "BURAYA_BOT_TOKEN"
-CHAT_ID = "BURAYA_GRUP_ID"
+logging.basicConfig(level=logging.INFO)
 
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
 bot = Bot(token=BOT_TOKEN)
 
 headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    "User-Agent": "Mozilla/5.0"
 }
 
-# TRENDYOL SCRAPER
-def trendyol_firsatlar():
+async def fetch(session, url):
+    try:
+        async with session.get(url, headers=headers) as response:
+            return await response.text()
+    except Exception as e:
+        logging.error(f"Hata: {e}")
+        return None
+
+async def trendyol():
     url = "https://www.trendyol.com/sr?fl=fiyatidusenler"
-    r = requests.get(url, headers=headers)
-    soup = BeautifulSoup(r.text, "html.parser")
+    async with aiohttp.ClientSession() as session:
+        html = await fetch(session, url)
+        if not html:
+            logging.error("Trendyol html yok.")
+            return []
 
-    ürünler = soup.select(".p-card-wrppr")
+        soup = BeautifulSoup(html, "html.parser")
+        ürünler = soup.select(".p-card-wrppr")
+        sonuç = []
 
-    sonuçlar = []
+        for u in ürünler[:5]:
+            try:
+                ad = u.select_one(".prdct-desc-cntnr").text.strip()
+                fiyat = u.select_one(".prc-box-dscntd").text.strip()
+                link = "https://www.trendyol.com" + u.a["href"]
+                sonuç.append(f"🔥 *{ad}*\nFiyat: {fiyat}\n🔗 {link}")
+            except:
+                pass
 
-    for u in ürünler[:10]:  # ilk 10 üründen limit
-        try:
-            ad = u.select_one(".prdct-desc-cntnr").text.strip()
-            fiyat = u.select_one(".prc-box-dscntd").text.strip()
-            eski = u.select_one(".prc-box-orgnl").text.strip() if u.select_one(".prc-box-orgnl") else None
-            link = "https://www.trendyol.com" + u.a["href"]
+        return sonuç
 
-            if eski:
-                eski_f = float(eski.replace("TL", "").replace(",", "."))
-                yeni_f = float(fiyat.replace("TL", "").replace(",", "."))
-                indirim = int((1 - yeni_f / eski_f) * 100)
-
-                if indirim >= 20:
-                    sonuçlar.append(f"🔥 *{ad}*\nEski: {eski}\nYeni: {fiyat}\nİndirim: %{indirim}\n🔗 {link}")
-
-        except:
-            pass
-    
-    return sonuçlar
-
-
-# AMAZON SCRAPER
-def amazon_firsatlar():
+async def amazon():
     url = "https://www.amazon.com.tr/gp/goldbox"
-    r = requests.get(url, headers=headers)
-    soup = BeautifulSoup(r.text, "html.parser")
+    async with aiohttp.ClientSession() as session:
+        html = await fetch(session, url)
+        if not html:
+            return []
 
-    ürünler = soup.select(".a-section.a-text-center")
+        soup = BeautifulSoup(html, "html.parser")
+        sonuç = []
+        ürünler = soup.select("img")
 
-    sonuçlar = []
+        for u in ürünler[:5]:
+            try:
+                ad = u["alt"]
+                link = "https://www.amazon.com.tr"
+                sonuç.append(f"🔵 *{ad}*\n🔗 {link}")
+            except:
+                pass
 
-    for u in ürünler[:5]:
-        try:
-            ad = u.select_one("img")["alt"]
-            link = "https://www.amazon.com.tr" + u.select_one("a")["href"]
+        return sonuç
 
-            sonuçlar.append(f"🔵 *{ad}*\n🔗 {link}")
+async def loop_tasks():
+    while True:
+        logging.info("Tarama başlıyor...")
 
-        except:
-            pass
-    
-    return sonuçlar
+        trendyol_list = await trendyol()
+        amazon_list = await amazon()
 
+        tüm = trendyol_list + amazon_list
 
-# HEPSİBURADA SCRAPER
-def hepsiburada_firsatlar():
-    url = "https://www.hepsiburada.com/kampanyalar"
-    r = requests.get(url, headers=headers)
-    soup = BeautifulSoup(r.text, "html.parser")
+        if tüm:
+            for m in tüm:
+                await bot.send_message(chat_id=CHAT_ID, text=m, parse_mode="Markdown")
+                await asyncio.sleep(2)
 
-    sonuçlar = []
-    kampanyalar = soup.select("a.campaign-card__title")
+        logging.info("Tarama bitti. 15 dk bekleniyor...")
+        await asyncio.sleep(900)  # 15 dakika
 
-    for k in kampanyalar[:5]:
-        try:
-            ad = k.text.strip()
-            link = "https://www.hepsiburada.com" + k["href"]
-            sonuçlar.append(f"🟢 *{ad}*\n🔗 {link}")
-        except:
-            pass
-    
-    return sonuçlar
+async def main():
+    await loop_tasks()
 
-
-# N11 SCRAPER
-def n11_firsatlar():
-    url = "https://www.n11.com/gunun-firsatlari"
-    r = requests.get(url, headers=headers)
-    soup = BeautifulSoup(r.text, "html.parser")
-
-    sonuçlar = []
-    ürünler = soup.select(".productName")
-
-    for u in ürünler[:5]:
-        try:
-            ad = u.text.strip()
-            sonuçlar.append(f"🟣 *{ad}*\n🔗 https://www.n11.com/gunun-firsatlari")
-        except:
-            pass
-
-    return sonuçlar
-
-
-# MESAJ GÖNDERİCİ
-def gönder():
-    mesajlar = []
-
-    mesajlar += trendyol_firsatlar()
-    mesajlar += amazon_firsatlar()
-    mesajlar += hepsiburada_firsatlar()
-    mesajlar += n11_firsatlar()
-
-    if not mesajlar:
-        return
-
-    for mesaj in mesajlar:
-        bot.send_message(chat_id=CHAT_ID, text=mesaj, parse_mode="Markdown")
-        time.sleep(2)
-
-
-# HER 30 DAKİKADA ÇALIŞTIR
-schedule.every(30).minutes.do(gönder)
-
-print("Bot çalışıyor...")
-
-while True:
-    schedule.run_pending()
-    time.sleep(1)
+if __name__ == "__main__":
+    asyncio.run(main())
